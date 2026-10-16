@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Intake plausibility check</title>
+<style>
+:root{--bg:#fff;--fg:#1c2733;--mut:#55616d;--line:#cfd6dc;--acc:#0b5c8f;--warn:#8a5a00;--warnbg:#fff4d6;--hi:#9b1c1c;--hibg:#fde4e4;--info:#2d4b66;--infobg:#e6eff7;--card:#f5f7f9}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--fg);background:var(--bg)}
+main{max-width:1180px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.15rem;margin:28px 0 8px}
+p.lead{margin:0 0 14px;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:14px 16px;margin:12px 0}
+.note{border-left:4px solid var(--acc);padding:8px 12px;background:var(--infobg);margin:12px 0}
+label{display:inline-block;margin:4px 14px 4px 0}
+input[type=number],input[type=text]{font:inherit;padding:4px 6px;border:1px solid #8b96a0;border-radius:4px;width:7em}
+input[type=text]{width:11em}
+button,.btn{font:inherit;padding:6px 12px;border:1px solid var(--acc);background:var(--acc);color:#fff;border-radius:4px;cursor:pointer}
+button.sec{background:#fff;color:var(--acc)}
+button:disabled{opacity:.5;cursor:default}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+th{background:#e9eef2}
+th.s{cursor:pointer;user-select:none}th.s:hover{background:#dbe4ea}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.78rem;font-weight:600}
+.tag.high{background:var(--hibg);color:var(--hi)}.tag.warn{background:var(--warnbg);color:var(--warn)}.tag.info{background:var(--infobg);color:var(--info)}
+.sum{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0}
+.sum div{border:1px solid var(--line);border-radius:6px;padding:8px 12px;min-width:150px;background:#fff}
+.sum b{display:block;font-size:1.4rem}
+.err{color:var(--hi);font-weight:600}
+.small{font-size:.85rem;color:var(--mut)}
+.wrap{overflow-x:auto}
+details summary{cursor:pointer;font-weight:600}
+@media print{
+ .noprint,details>summary{display:none}
+ body{font-size:11px}main{max-width:none;padding:0}
+ .card{border:0;background:none;padding:0}
+ th,td{padding:2px 4px}
+ th{background:#eee!important;-webkit-print-color-adjust:exact}
+ tr{page-break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<main>
+<h1>Intake plausibility check</h1>
+<p class="small" style="margin:0 0 6px"><b>Not an official ISCC tool; not affiliated with ISCC.</b></p>
+<p class="lead">Flags collection-point intakes that deserve a second look before an audit. Everything runs in this page; no file is uploaded.</p>
+<div class="note">Paraphrased from ISCC EU 203: plausibility-checking incoming deliveries is the collecting point's own duty. This is a pre-audit helper, not certification advice. Read the current standard yourself; your certification body decides what is acceptable.</div>
+
+<div class="card noprint">
+ <label><b>1. Choose your intake CSV</b> <input type="file" id="file" accept=".csv,text/csv,text/plain"></label>
+ <div id="fileinfo" class="small">Columns: date, origin_id, origin_type, quantity_kg (optional: delivery_id, origin_capacity_kg_month).</div>
+ <div id="loaderr" class="err"></div>
+</div>
+
+<div class="card noprint">
+ <b>2. Thresholds</b>
+ <p class="small" style="margin:4px 0 8px">The ceilings below are <b>example defaults only</b>. They are not from any standard. Set them from what is realistic for your own suppliers.</p>
+ <label>Round check <select id="roundMode"><option value="share">per origin (share of round deliveries)</option><option value="each">every round delivery</option></select></label>
+ <label>Round share above (%) <input type="number" id="roundShare" min="1" max="100" value="60"></label>
+ <label>Min deliveries for share <input type="number" id="roundShareMin" min="2" value="6"></label>
+ <label>Date format <select id="dateFormat"><option value="ymd">YYYY-MM-DD</option><option value="dmy">DD/MM/YYYY</option><option value="mdy">MM/DD/YYYY</option></select></label>
+ <label>Round step (kg) <input type="number" id="roundStep" min="1" value="100"></label>
+ <label>Strong round step (kg) <input type="number" id="strongStep" min="1" value="1000"></label>
+ <label>Monthly ceiling = per-delivery ceiling x <input type="number" id="monthMult" min="1" step="0.5" value="10"></label>
+ <label>Identical-quantity run (deliveries) <input type="number" id="runMin" min="2" value="4"></label>
+ <label>Spike factor x median <input type="number" id="spikeX" min="1" step="0.5" value="3"></label>
+ <label>Spike min deliveries <input type="number" id="spikeMin" min="2" value="5"></label>
+ <details open style="margin-top:8px"><summary>Per-delivery ceiling by origin type (kg)</summary>
+  <div class="wrap"><table id="ceil" style="max-width:420px;margin-top:6px"><thead><tr><th>Origin type</th><th>Ceiling kg</th><th></th></tr></thead><tbody></tbody></table></div>
+  <p class="small">Type <code>other</code> is used for any type not listed. Leave a ceiling empty to skip that type.</p>
+  <button class="sec" id="addType" type="button">Add type</button>
+  <button class="sec" id="resetCeil" type="button">Reset examples</button>
+ </details>
+ <div style="margin-top:10px"><button id="run" type="button" disabled>Run check</button></div>
+</div>
+
+<div id="results" hidden>
+ <h2>Summary</h2>
+ <div class="sum" id="summary"></div>
+ <div id="dqnote" class="small"></div>
+
+ <h2>Flags</h2>
+ <p class="noprint"><button id="dl" type="button">Download flags CSV</button> <span class="small">Keep a copy with your records. Your certification body decides what counts as evidence.</span></p>
+ <p class="small" id="flagnote"></p>
+ <div class="wrap"><table id="flags"><thead></thead><tbody></tbody></table></div>
+
+ <h2>Monthly totals per origin</h2>
+ <p class="small" id="monnote"></p>
+ <div class="wrap"><table id="months"><thead></thead><tbody></tbody></table></div>
+ <p class="small" id="runinfo"></p>
+</div>
+</main>
+
+<script>
+/* RULES-BEGIN */
+// Pure logic. No DOM access here. Loaded by the page and by tests.
+function detectDelimiter(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  var inQ = false, com = 0, semi = 0;
+  for (var i = 0; i < text.length; i++) {
+    var c = text[i];
+    if (c === '"') inQ = !inQ;
+    else if (!inQ) {
+      if (c === "\n" || c === "\r") break;
+      if (c === ",") com++; else if (c === ";") semi++;
+    }
+  }
+  return semi > com ? ";" : ",";
+}
+
+function parseCSV(text, delim) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  delim = delim || detectDelimiter(text);
+  var rows = [], row = [], field = "", inQ = false, i = 0, n = text.length, c;
+  while (i < n) {
+    c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQ = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }
+    if (c === '"' && field === "") { inQ = true; i++; continue; }
+    if (c === delim) { row.push(field); field = ""; i++; continue; }
+    if (c === "\r" || c === "\n") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); field = ""; rows.push(row); row = []; i++; continue;
+    }
+    field += c; i++;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(function (r) { return !(r.length === 1 && r[0].trim() === ""); });
+}
+
+function validDate(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  var y = +m[1], mo = +m[2], d = +m[3];
+  if (mo < 1 || mo > 12 || d < 1) return false;
+  var dim = [31, (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+  return d <= dim;
+}
+
+function parseQty(s, decimalComma) {
+  s = (s == null ? "" : String(s)).trim();
+  if (decimalComma) {
+    if (/^[+-]?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) s = s.replace(/\./g, "");
+    else if (s.indexOf(".") !== -1) return NaN;
+    s = s.replace(",", ".");
+  }
+  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(s)) return NaN;
+  return Number(s);
+}
+
+function normDate(s, fmt) {
+  if (!fmt || fmt === "ymd") return s;
+  var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(s);
+  if (!m) return s;
+  var d = fmt === "dmy" ? m[1] : m[2], mo = fmt === "dmy" ? m[2] : m[1];
+  return m[3] + "-" + ("0" + mo).slice(-2) + "-" + ("0" + d).slice(-2);
+}
+
+function toRecords(table, opts) {
+  opts = opts || {};
+  var dc = !!opts.decimalComma;
+  var out = { recs: [], missingCols: [], header: [] };
+  if (!table.length) { out.missingCols = ["date", "origin_id", "origin_type", "quantity_kg"]; return out; }
+  var head = table[0].map(function (h) { return h.trim().toLowerCase(); });
+  out.header = head;
+  var ix = {};
+  ["date", "origin_id", "origin_type", "quantity_kg", "delivery_id", "origin_capacity_kg_month"].forEach(function (k) { ix[k] = head.indexOf(k); });
+  ["date", "origin_id", "origin_type", "quantity_kg"].forEach(function (k) { if (ix[k] < 0) out.missingCols.push(k); });
+  if (out.missingCols.length) return out;
+  function g(r, k) { return ix[k] >= 0 && r[ix[k]] != null ? r[ix[k]].trim() : ""; }
+  for (var i = 1; i < table.length; i++) {
+    var r = table[i];
+    var capRaw = g(r, "origin_capacity_kg_month");
+    var cap = capRaw === "" ? NaN : parseQty(capRaw, dc);
+    out.recs.push({
+      line: i + 1, dateRaw: g(r, "date"), date: normDate(g(r, "date"), opts.dateFormat), origin: g(r, "origin_id"), type: g(r, "origin_type").toLowerCase(),
+      qtyRaw: g(r, "quantity_kg"), qty: parseQty(g(r, "quantity_kg"), dc),
+      id: g(r, "delivery_id"), cap: cap
+    });
+  }
+  return out;
+}
+
+function median(a) {
+  var s = a.slice().sort(function (x, y) { return x - y; }), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function isMultiple(q, step) {
+  if (!(step > 0) || !(q > 0)) return false;
+  var r = q / step;
+  return Math.abs(r - Math.round(r)) < 1e-9;
+}
+
+function defaultConfig() {
+  return {
+    roundMode: "share", roundShare: 0.6, roundShareMin: 6,
+    roundStep: 100, strongStep: 1000, monthMult: 10, runMin: 4, spikeX: 3, spikeMin: 5,
+    // EXAMPLE defaults only. Set your own.
+    ceilings: Object.assign(Object.create(null), { restaurant: 300, hotel: 800, food_factory: 5000, household: 50, other: 1000 })
+  };
+}
+
+function ceilingFor(type, cfg) {
+  var c = cfg.ceilings;
+  var v = Object.prototype.hasOwnProperty.call(c, type) ? c[type] : c.other;
+  return (typeof v === "number" && v > 0) ? v : null;
+}
+
+function fmt(n) { return (Math.round(n * 100) / 100).toString(); }
+
+function flag(rec, rule, level, kg, why, check) {
+  return { line: rec.line, date: rec.date, origin: rec.origin, kg: kg, rule: rule, level: level, why: why, check: check, delivery_id: rec.id };
+}
+
+// Returns { flags, monthly, stats }
+function evaluate(recs, cfg) {
+  var flags = [], good = [], dq = 0;
+  // Rule 6: data quality
+  recs.forEach(function (r) {
+    var bad = false;
+    if (!r.origin) { flags.push(flag(r, "6 Data quality", "high", r.qtyRaw, "Origin is missing.", "Fill in the origin from the weighbridge ticket or delivery note.")); bad = true; }
+    if (!validDate(r.date)) { flags.push(flag(r, "6 Data quality", "high", r.qtyRaw, "Date '" + r.dateRaw + "' is not a valid YYYY-MM-DD date.", "Correct the date from the delivery note.")); bad = true; }
+    if (isNaN(r.qty)) { flags.push(flag(r, "6 Data quality", "high", r.qtyRaw, "Quantity '" + r.qtyRaw + "' is not a number.", "Correct the quantity from the weighbridge ticket.")); bad = true; }
+    else if (r.qty <= 0) { flags.push(flag(r, "6 Data quality", "high", r.qtyRaw, "Quantity is zero or negative.", "Check whether this is a typing error, a correction entry or a return, and document it.")); bad = true; }
+    if (bad) dq++; else good.push(r);
+  });
+  good.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.line - b.line; });
+
+  var byOrigin = Object.create(null);
+  good.forEach(function (r) { (byOrigin[r.origin] = byOrigin[r.origin] || []).push(r); });
+
+  good.forEach(function (r) {
+    // Rule 1: round numbers
+    if (cfg.roundMode === "each") {
+      if (isMultiple(r.qty, cfg.strongStep)) {
+        flags.push(flag(r, "1 Round number", "high", r.qty, fmt(r.qty) + " kg is an exact multiple of " + cfg.strongStep + " kg. Real weighings rarely land on such a figure.", "Compare with the weighbridge ticket or scale print-out. Was this a weighed value or an estimate?"));
+      } else if (isMultiple(r.qty, cfg.roundStep)) {
+        flags.push(flag(r, "1 Round number", "warn", r.qty, fmt(r.qty) + " kg is an exact multiple of " + cfg.roundStep + " kg. This can indicate an estimate rather than a weighing.", "Compare with the weighbridge ticket or scale print-out."));
+      }
+    } else if (isMultiple(r.qty, cfg.strongStep)) {
+      flags.push(flag(r, "1 Round number", "info", r.qty, fmt(r.qty) + " kg is an exact multiple of " + cfg.strongStep + " kg. One such delivery alone is weak evidence; it matters more if the origin does this often.", "Optional: compare with the weighbridge ticket."));
+    }
+    // Rule 2: high per delivery
+    var ce = ceilingFor(r.type, cfg);
+    if (ce !== null && r.qty > ce) {
+      flags.push(flag(r, "2 High amount", "warn", r.qty, fmt(r.qty) + " kg is above the " + fmt(ce) + " kg ceiling set for origin type '" + (r.type || "(blank)") + "'.", "Ask whether this origin can plausibly produce this much in one delivery. Check for mixed-up origins or bulked loads."));
+    }
+  });
+
+  // Rules 4 and 5, per origin
+  Object.keys(byOrigin).forEach(function (o) {
+    var list = byOrigin[o], i = 0;
+    if (cfg.roundMode !== "each" && list.length >= cfg.roundShareMin) {
+      var rr = list.filter(function (r) { return isMultiple(r.qty, cfg.roundStep); });
+      if (rr.length / list.length > cfg.roundShare) {
+        var sum = 0; rr.forEach(function (r) { sum += r.qty; });
+        flags.push(flag(rr[0], "1 Round number", "warn", sum, rr.length + " of " + list.length + " deliveries (" + Math.round(100 * rr.length / list.length) + "%) from this origin are exact multiples of " + cfg.roundStep + " kg, more than " + Math.round(100 * cfg.roundShare) + "%. kg shown is the sum of the round deliveries.", "Pull the weighbridge tickets for several of these deliveries. Check scale resolution: a scale that only reads in " + cfg.roundStep + " kg steps makes this rule meaningless."));
+      }
+    }
+    while (i < list.length) {
+      var j = i;
+      while (j + 1 < list.length && list[j + 1].qty === list[i].qty) j++;
+      var len = j - i + 1;
+      if (len >= cfg.runMin) {
+        flags.push(flag(list[i], "4 Regular pattern", "warn", list[i].qty, len + " deliveries in a row from this origin have exactly " + fmt(list[i].qty) + " kg (from " + list[i].date + " to " + list[j].date + ").", "Real intake varies. Check whether these are fixed allocations or copied values."));
+      }
+      i = j + 1;
+    }
+    if (list.length >= cfg.spikeMin) {
+      var med = median(list.map(function (r) { return r.qty; }));
+      list.forEach(function (r) {
+        if (r.qty > cfg.spikeX * med) {
+          flags.push(flag(r, "5 Spike", "warn", r.qty, fmt(r.qty) + " kg is more than " + cfg.spikeX + "x this origin's median delivery (" + fmt(med) + " kg, " + list.length + " deliveries).", "Ask what changed at the origin on that day (event, clean-out, second source)."));
+        }
+      });
+    }
+  });
+
+  // Rule 3: monthly totals
+  var mm = Object.create(null);
+  good.forEach(function (r) {
+    var k = r.origin + "\u0000" + r.date.slice(0, 7);
+    var m = mm[k] || (mm[k] = { origin: r.origin, month: r.date.slice(0, 7), type: r.type, total: 0, n: 0, cap: NaN, line: r.line });
+    m.total += r.qty; m.n++;
+    if (!isNaN(r.cap) && r.cap > 0 && !(m.cap >= r.cap)) m.cap = r.cap;
+  });
+  var monthly = Object.keys(mm).map(function (k) { return mm[k]; });
+  monthly.sort(function (a, b) { return a.origin < b.origin ? -1 : a.origin > b.origin ? 1 : a.month < b.month ? -1 : a.month > b.month ? 1 : 0; });
+  monthly.forEach(function (m) {
+    var limit = null, basis = "";
+    if (!isNaN(m.cap)) { limit = m.cap; basis = "the stated monthly capacity of " + fmt(m.cap) + " kg"; }
+    else {
+      var ce = ceilingFor(m.type, cfg);
+      if (ce !== null) { limit = ce * cfg.monthMult; basis = "type ceiling " + fmt(ce) + " kg x " + cfg.monthMult + " = " + fmt(limit) + " kg"; }
+    }
+    m.limit = limit; m.basis = basis; m.over = limit !== null && m.total > limit;
+    if (m.over) {
+      flags.push({ line: m.line, date: m.month, origin: m.origin, kg: m.total, rule: "3 Monthly total", level: "warn", delivery_id: "",
+        why: "Total for the month is " + fmt(m.total) + " kg over " + m.n + " deliveries, above " + basis + ".",
+        check: "Compare with what this origin can produce in a month. Check for double-booked deliveries or a wrong origin." });
+    }
+  });
+
+  flags.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.line - b.line; });
+  return { flags: flags, monthly: monthly, stats: { rows: recs.length, usable: good.length, dq: dq, origins: Object.keys(byOrigin).length } };
+}
+
+function csvCell(v) {
+  var s = v == null ? "" : String(v);
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s; // spreadsheet formula guard (text only)
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function flagsToCSV(flags, meta) {
+  var head = ["date", "origin_id", "delivery_id", "quantity_kg", "rule", "level", "why_flagged", "what_to_check", "source_line"];
+  var out = [];
+  if (meta) {
+    var c = meta.cfg || {};
+    var kv = function (k, v) { out.push(["# " + k, v].map(csvCell).join(",")); };
+    kv("note", "Output of a pre-audit plausibility helper. Not certification advice; your certification body decides what counts as evidence.");
+    kv("run_utc", meta.runUtc || "");
+    kv("source_file", meta.sourceFile || "");
+    ["roundMode", "roundShare", "roundShareMin", "roundStep", "strongStep", "monthMult", "runMin", "spikeX", "spikeMin"].forEach(function (k) { kv("threshold_" + k, c[k]); });
+    kv("date_format", meta.dateFormat || "ymd");
+    Object.keys(c.ceilings || {}).forEach(function (t) { kv("ceiling_kg_" + t, c.ceilings[t] === null ? "none" : c.ceilings[t]); });
+  }
+  out.push(head.join(","));
+  flags.forEach(function (f) {
+    out.push([f.date, f.origin, f.delivery_id, f.kg, f.rule, f.level, f.why, f.check, f.line].map(csvCell).join(","));
+  });
+  return out.join("\r\n") + "\r\n";
+}
+/* RULES-END */
+
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var EX = defaultConfig().ceilings;
+  var parsed = null, table = null, delim = ",", fileName = "", result = null, sortState = { flags: { k: "date", d: 1 }, months: { k: "origin", d: 1 } };
+  var CAP = 3000;
+
+  function ceilRow(t, v) {
+    var tr = document.createElement("tr");
+    var a = document.createElement("td"), b = document.createElement("td"), c = document.createElement("td");
+    var it = document.createElement("input"); it.type = "text"; it.value = t; a.appendChild(it);
+    var iv = document.createElement("input"); iv.type = "number"; iv.min = "0"; iv.value = v == null ? "" : v; b.appendChild(iv);
+    var x = document.createElement("button"); x.type = "button"; x.className = "sec"; x.textContent = "Remove";
+    x.onclick = function () { tr.remove(); run(); }; c.appendChild(x);
+    tr.appendChild(a); tr.appendChild(b); tr.appendChild(c);
+    $("ceil").tBodies[0].appendChild(tr);
+  }
+  function resetCeil() {
+    $("ceil").tBodies[0].innerHTML = "";
+    Object.keys(EX).forEach(function (k) { ceilRow(k, EX[k]); });
+  }
+  function readCfg() {
+    var cfg = defaultConfig();
+    ["roundStep", "strongStep", "monthMult", "runMin", "spikeX", "spikeMin", "roundShareMin"].forEach(function (k) {
+      var v = parseFloat($(k).value); if (v > 0) cfg[k] = v;
+    });
+    cfg.roundMode = $("roundMode").value;
+    var sh = parseFloat($("roundShare").value); if (sh > 0 && sh <= 100) cfg.roundShare = sh / 100;
+    cfg.dateFormat = $("dateFormat").value;
+    cfg.ceilings = Object.create(null);
+    Array.prototype.forEach.call($("ceil").tBodies[0].rows, function (tr) {
+      var t = tr.cells[0].firstChild.value.trim().toLowerCase(), v = parseFloat(tr.cells[1].firstChild.value);
+      if (t) cfg.ceilings[t] = v > 0 ? v : null;
+    });
+    return cfg;
+  }
+
+  function td(tr, text, cls) {
+    var c = document.createElement("td"); c.textContent = text; if (cls) c.className = cls; tr.appendChild(c); return c;
+  }
+  function header(tbl, cols, key) {
+    var tr = document.createElement("tr");
+    cols.forEach(function (c) {
+      var th = document.createElement("th");
+      th.className = "s" + (c.n ? " n" : "");
+      var st = sortState[key];
+      th.textContent = c.t + (st.k === c.k ? (st.d > 0 ? " ▲" : " ▼") : "");
+      th.onclick = function () {
+        st.d = st.k === c.k ? -st.d : 1; st.k = c.k; render();
+      };
+      tr.appendChild(th);
+    });
+    tbl.tHead.innerHTML = ""; tbl.tHead.appendChild(tr);
+  }
+  function sorted(arr, key) {
+    var st = sortState[key];
+    return arr.slice().sort(function (a, b) {
+      var x = a[st.k], y = b[st.k];
+      if (typeof x === "string" || typeof y === "string") { x = String(x); y = String(y); }
+      else { x = +x || 0; y = +y || 0; }
+      return (x < y ? -1 : x > y ? 1 : a.line - b.line) * st.d;
+    });
+  }
+
+  function render() {
+    if (!result) return;
+    var s = result.stats, f = result.flags, by = Object.create(null);
+    f.forEach(function (x) { by[x.rule] = (by[x.rule] || 0) + 1; });
+    var box = $("summary"); box.innerHTML = "";
+    function card(n, label) { var d = document.createElement("div"); var b = document.createElement("b"); b.textContent = n; d.appendChild(b); d.appendChild(document.createTextNode(label)); box.appendChild(d); }
+    card(s.rows, "rows read"); card(s.origins, "origins"); card(f.length, "flags in total");
+    ["1 Round number", "2 High amount", "3 Monthly total", "4 Regular pattern", "5 Spike", "6 Data quality"].forEach(function (r) { card(by[r] || 0, r.slice(2)); });
+    $("dqnote").textContent = s.dq ? s.dq + " row(s) had data problems and were left out of rules 1 to 5. Fix them and run again." : "";
+
+    var tb = $("flags"), tbody = tb.tBodies[0];
+    header(tb, [{ k: "date", t: "Date" }, { k: "origin", t: "Origin" }, { k: "kg", t: "kg", n: 1 }, { k: "rule", t: "Rule" }, { k: "level", t: "Level" }, { k: "why", t: "Why flagged" }, { k: "check", t: "What to check" }], "flags");
+    tbody.innerHTML = "";
+    var fs = sorted(f, "flags"), shown = fs.slice(0, CAP);
+    shown.forEach(function (x) {
+      var tr = document.createElement("tr");
+      td(tr, x.date); td(tr, x.origin || "(missing)");
+      td(tr, typeof x.kg === "number" ? fmt(x.kg) : x.kg, "n"); td(tr, x.rule);
+      var lc = td(tr, ""); var sp = document.createElement("span"); sp.className = "tag " + x.level; sp.textContent = x.level === "high" ? "stronger" : x.level; lc.appendChild(sp);
+      td(tr, x.why); td(tr, x.check);
+      tbody.appendChild(tr);
+    });
+    $("flagnote").textContent = f.length ? (f.length > CAP ? "Showing the first " + CAP + " of " + f.length + " flags. The CSV download has all of them." : "") : "No flags with the current thresholds. That does not prove the data is right; it only means none of these rules fired.";
+
+    var mt = $("months");
+    header(mt, [{ k: "origin", t: "Origin" }, { k: "month", t: "Month" }, { k: "type", t: "Type" }, { k: "n", t: "Deliveries", n: 1 }, { k: "total", t: "Total kg", n: 1 }, { k: "limit", t: "Limit kg", n: 1 }, { k: "over", t: "Status" }], "months");
+    var mb = mt.tBodies[0]; mb.innerHTML = "";
+    var ms = sorted(result.monthly, "months"), mshown = ms.slice(0, CAP);
+    mshown.forEach(function (m) {
+      var tr = document.createElement("tr");
+      td(tr, m.origin); td(tr, m.month); td(tr, m.type || "-"); td(tr, m.n, "n"); td(tr, fmt(m.total), "n");
+      td(tr, m.limit === null ? "none" : fmt(m.limit), "n"); td(tr, m.over ? "over limit" : "ok");
+      mb.appendChild(tr);
+    });
+    $("monnote").textContent = ms.length > CAP ? "Showing the first " + CAP + " of " + ms.length + " rows." : "";
+    $("runinfo").textContent = "Checked " + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC in your browser. Thresholds: round " + readCfg().roundStep + "/" + readCfg().strongStep + " kg, spike " + readCfg().spikeX + "x median, run " + readCfg().runMin + ".";
+  }
+
+  function run() {
+    if (!table) return;
+    $("loaderr").textContent = "";
+    try {
+      var cfg = readCfg();
+      var p = toRecords(table, { decimalComma: delim === ";", dateFormat: cfg.dateFormat });
+      result = evaluate(p.recs, cfg);
+      $("results").hidden = false;
+      render();
+    } catch (e) {
+      result = null; $("results").hidden = true;
+      $("loaderr").textContent = "Processing failed: " + (e && e.message ? e.message : e) + ". Check the file and settings.";
+    }
+  }
+
+  $("file").addEventListener("change", function (e) {
+    var file = e.target.files[0]; $("loaderr").textContent = ""; parsed = null; table = null; result = null;
+    $("results").hidden = true; $("run").disabled = true;
+    if (!file) return;
+    var rd = new FileReader();
+    rd.onerror = function () { $("loaderr").textContent = "Could not read that file."; };
+    rd.onload = function () {
+      var p;
+      try {
+        var text = String(rd.result);
+        delim = detectDelimiter(text); table = parseCSV(text, delim); fileName = file.name;
+        p = toRecords(table, { decimalComma: delim === ";" });
+      } catch (err) { $("loaderr").textContent = "Could not parse that file: " + err.message; table = null; return; }
+      if (p.missingCols.length) { table = null; $("loaderr").textContent = "Missing required column(s): " + p.missingCols.join(", ") + ". Header found: " + (p.header.join(", ") || "(empty file)"); return; }
+      parsed = p; $("run").disabled = false;
+      $("fileinfo").textContent = file.name + ": " + p.recs.length + " data rows" + (delim === ";" ? " (semicolon-separated; decimal comma accepted)." : ".");
+      run();
+    };
+    rd.readAsText(file);
+  });
+  $("run").onclick = run;
+  $("addType").onclick = function () { ceilRow("", ""); };
+  $("resetCeil").onclick = function () { resetCeil(); run(); };
+  $("ceil").addEventListener("change", run);
+  $("dl").onclick = function () {
+    if (!result) return;
+    var cfg = readCfg();
+    var csv = flagsToCSV(sorted(result.flags, "flags"), { runUtc: new Date().toISOString(), sourceFile: fileName, cfg: cfg, dateFormat: cfg.dateFormat });
+    var blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
+    var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "plausibility-flags.csv";
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  };
+  ["roundStep", "strongStep", "monthMult", "runMin", "spikeX", "spikeMin", "roundMode", "roundShare", "roundShareMin", "dateFormat"].forEach(function (k) { $(k).addEventListener("change", run); });
+  resetCeil();
+})();
+</script>
+</body>
+</html>
